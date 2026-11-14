@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""herdr-ssh: list the SSH sessions open in Herdr terminals, and read one.
+
+For people and for coding agents: instead of reading every terminal to find the
+one that is logged in to a server, ask for the list and read that terminal.
+
+  herdr-ssh                     every SSH session (JSON when piped)
+  herdr-ssh web01               only those matching "web01"
+  herdr-ssh --focused           the one on screen now
+  herdr-ssh read web01          print that terminal's screen and history
+  herdr-ssh read --focused --lines 500
+
+Read-only: it never types into a terminal.
+
+The rules are those of mods/ssh-sidebar/match.js; change both together.
+Part of herdr-ssh-sidebar.
+"""
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+BUILTIN = ["ssh", "autossh"]
+VALUE_OPTS = "BbcDEeFIiJLlMmOoPpQRSWw"
+INTERPRETER = re.compile(r"^(python[\d.]*|node|ruby|perl|php|lua|deno|bun|bash|sh|zsh|dash|ksh|fish|pwsh|powershell)$")
+VERSION = "0.1.0"
+
+
+def app_home():
+    return os.environ.get("HERDR_APP_HOME") or os.path.expanduser("~/.config/herdr-app")
+
+
+def run_json(cmd, timeout=15):
+    """A command's JSON output, or None if it failed."""
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def base_name(s):
+    last = re.split(r"[\\/]", str(s or ""))[-1].lower()
+    return last[:-4] if last.endswith(".exe") else last
+
+
+def split_dest(dest):
+    d = re.sub(r"^ssh://", "", dest).rstrip("/")
+    user = port = None
+    if "@" in d:
+        user, d = d.rsplit("@", 1)
+    m = re.match(r"^(.*):(\d+)$", d)
+    if m and ":" not in m.group(1):
+        d, port = m.group(1), m.group(2)
+    return user, d, port
+
+
+def parse_ssh(args):
+    """(user, host, port) of an ssh command line, or None."""
+    user = port = None
+
+    def done(dest):
+        u, h, p = split_dest(dest)
+        return (u or user, h, p or port)
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            return done(args[i + 1]) if i + 1 < len(args) else None
+        if a.startswith("-") and len(a) > 1:
+            for j in range(1, len(a)):
+                c = a[j]
+                if c not in VALUE_OPTS:
+                    continue
+                if j + 1 < len(a):
+                    value = a[j + 1:]
+                else:
+                    i += 1
+                    value = args[i] if i < len(args) else None
+                if c == "l" and value:
+                    user = value
+                if c == "p" and value:
+                    port = value
+                break
+            i += 1
+            continue
+        return done(a)
+    return None
+
+
+def parse_title(title):
+    m = re.match(r"^\s*([A-Za-z0-9._-]+)@([A-Za-z0-9._-]+)", str(title or ""))
+    return (m.group(1), m.group(2)) if m else None
+
+
+def short_host(h):
+    return str(h or "").split(".")[0].lower()
+
+
+def machine_of(address):
+    return address.split("/")[0] if "/" in address else ""
+
+
+def ssh_session(t, names, hostnames):
+    fg = (t or {}).get("foreground")
+    if (t or {}).get("state") != "live" or not fg:
+        return None
+    argv = fg.get("argv") or []
+    second = argv[1] if len(argv) > 1 else ""
+    interpreted = bool(INTERPRETER.match(base_name(fg.get("name"))) or (argv and INTERPRETER.match(base_name(argv[0]))))
+    candidates = [
+        (base_name(fg.get("name")), 1),
+        (base_name(argv[0]) if argv else "", 1),
+        (base_name(second) if interpreted and not second.startswith("-") else "", 2),
+    ]
+    found = next(((n, s) for n, s in candidates if n and n in names), None)
+    if not found:
+        return None
+    tool, skip = found
+    args = argv[skip:]
+    dest = parse_ssh(args) if tool in BUILTIN else None
+    machine = machine_of(t["address"])
+    titled = parse_title(t.get("title"))
+    remote = titled if titled and short_host(titled[1]) != short_host(hostnames.get(machine)) else None
+    target = dest[1] if dest else " ".join(args)
+    return {
+        "address": t["address"],
+        "machine": machine or None,
+        "tool": tool,
+        "host": remote[1] if remote else target,
+        "user": remote[0] if remote else (dest[0] if dest else None),
+        "target": target,
+        "port": dest[2] if dest else None,
+        "command": " ".join([tool] + args),
+        "title": t.get("title") or "",
+        "where": (t.get("labels") or {}).get("where"),
+        "focused": False,
+    }
+
+
+def extra_commands():
+    try:
+        with open(os.path.join(app_home(), "ssh-terminals.json"), encoding="utf-8") as f:
+            listed = json.load(f).get("commands")
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [n for n in listed if isinstance(n, str) and n.strip()] if isinstance(listed, list) else []
+
+
+def focused_terminal():
+    """The terminal with the keyboard in the Herdr window, or None (window closed, a mod focused)."""
+    status = run_json(["herdr-app", "status"], timeout=5)
+    tree = run_json(["herdr-app", "ls"], timeout=5)
+    pane = (status or {}).get("focused_pane")
+    if not pane or not tree:
+        return None
+    for space in tree.get("spaces", []):
+        for tab in space.get("tabs", []):
+            for term in tab.get("terminals", []):
+                if term.get("pane") == pane:
+                    return term.get("terminal")
+    return None
+
+
+def sessions():
+    listing = run_json(["hc", "ls", "--json"])
+    if listing is None:
+        sys.exit("herdr-ssh: could not run `hc ls` (is herdr-core installed and running?)")
+    hostnames = {"": socket.gethostname()}
+    for m in (run_json(["hc", "machine", "ls", "--json"]) or {}).get("machines", []):
+        if m.get("name") and m.get("host"):
+            hostnames[m["name"]] = m["host"]
+    names = set(BUILTIN) | {base_name(n) for n in extra_commands()}
+    addresses = [t["address"] for t in listing.get("terminals", [])]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        full = list(pool.map(lambda a: run_json(["hc", "get", a, "--json"]), addresses))
+    found = [s for s in (ssh_session(t, names, hostnames) for t in full if t) if s]
+    focus = focused_terminal()
+    for s in found:
+        s["focused"] = s["address"] == focus
+    return found
+
+
+def matching(found, query, focused):
+    if focused:
+        found = [s for s in found if s["focused"]]
+    if not query:
+        return found
+    exact = [s for s in found if s["address"] == query]
+    if exact:
+        return exact
+    q = query.lower()
+    fields = ("host", "target", "title", "where", "user", "machine", "command")
+    return [s for s in found if any(q in str(s[f] or "").lower() for f in fields)]
+
+
+def table(found):
+    rows = [("", "ADDRESS", "HOST", "USER", "VIA", "WHERE")] + [
+        ("*" if s["focused"] else "", s["address"], s["host"], s["user"] or "-", s["tool"], s["where"] or "-")
+        for s in found
+    ]
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    return "\n".join("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip() for r in rows)
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="herdr-ssh", description="List the SSH sessions open in Herdr terminals, and read one.",
+        epilog="Read-only. Extra commands that count as SSH go in <Herdr home>/ssh-terminals.json.")
+    p.add_argument("-V", "--version", action="version", version=VERSION)
+    sub = p.add_subparsers(dest="cmd")
+
+    def common(sp):
+        sp.add_argument("query", nargs="?", help="part of a host name, or a terminal address like t7")
+        sp.add_argument("--focused", action="store_true", help="only the session on screen now")
+
+    ls = sub.add_parser("ls", help="list sessions (the default)")
+    common(ls)
+    ls.add_argument("--json", action="store_true", help="JSON even in a terminal")
+    rd = sub.add_parser("read", help="print one session's screen and history")
+    common(rd)
+    rd.add_argument("--lines", type=int, default=200, help="lines of history above the screen (default 200)")
+
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in ("ls", "read", "-h", "--help", "-V", "--version"):
+        argv = ["ls"] + argv
+    a = p.parse_args(argv)
+    found = matching(sessions(), a.query, a.focused)
+
+    if a.cmd == "read":
+        if len(found) != 1:
+            what = "--focused" if a.focused and not a.query else repr(a.query or "")
+            if not found:
+                sys.exit(f"herdr-ssh: no SSH session matches {what}. Run `herdr-ssh` to list them.")
+            sys.exit(f"herdr-ssh: {len(found)} SSH sessions match {what}; name one:\n{table(found)}")
+        sys.exit(subprocess.run(["hc", "read", found[0]["address"], "--lines", str(a.lines)]).returncode)
+
+    if a.json or not sys.stdout.isatty():
+        print(json.dumps({"sessions": found}, ensure_ascii=False, indent=1))
+    elif found:
+        print(table(found))
+    else:
+        print("No SSH sessions.")
+
+
+if __name__ == "__main__":
+    main()
