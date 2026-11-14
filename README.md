@@ -26,7 +26,7 @@ It is read-only: it never types into a terminal.
 Requires macOS or Linux, Herdr.app (started at least once) and `python3`.
 
 ```bash
-git clone <this repo>
+git clone https://github.com/MayouiY/herdr-ssh-sidebar.git
 cd herdr-ssh-sidebar
 ./install.sh
 ```
@@ -75,6 +75,10 @@ To look at a server I am logged in to, run `herdr-ssh` to list my open SSH
 sessions, then `herdr-ssh read <host>` (or `herdr-ssh read --focused` for the
 one I am looking at). Never type into those terminals.
 ```
+
+## Building it yourself
+
+[RECIPE.md](RECIPE.md) is the brief for the mod on its own: what it shows, how it behaves and what it is built from, enough for an agent to rebuild `mods/ssh-sidebar/` from an empty folder. To add only the mod, copy `mods/ssh-sidebar/` into `<Herdr home>/mods/` and place its block in a layout you own.
 
 ## How it works
 
