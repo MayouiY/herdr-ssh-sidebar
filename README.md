@@ -66,6 +66,19 @@ A terminal counts when that name is the program in the foreground, or the script
 
 For wrappers, the host shown is taken from the terminal title once the remote shell sets one (`user@host: ~`); until then the wrapper's arguments are shown.
 
+## Long host names
+
+Each row ends with a small tag naming the command that opened the session, which takes room from the host name in a narrow sidebar. To give the host the row's whole width, move the tag to the second line, in the same `ssh-terminals.json`:
+
+```json
+{
+  "commands": ["mytool"],
+  "tag": "below"
+}
+```
+
+`"beside"` (the default) keeps the tag at the end of the row. The sidebar picks up the change within a few seconds. A host name longer than the whole row is still cut short with an ellipsis.
+
 ## Telling your agents
 
 Add something like this to your agent's standing instructions (`AGENTS.md`, `CLAUDE.md`, ...):

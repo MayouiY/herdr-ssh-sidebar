@@ -5,7 +5,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { terminals, panes, focused, theme, run, hc, exec, readTextFile, appHome, openOverlay, closeOverlay, props, notify } from "herdr";
-import { sshSessions, commandsOf } from "./match.js";
+import { sshSessions, commandsOf, tagOf } from "./match.js";
 
 const MOD = "ssh-sidebar";
 const CONFIG = "ssh-terminals.json";
@@ -20,6 +20,7 @@ export default class SshSidebar extends View {
   init(_props, cx) {
     if (props()?.menu) return;
     this.extra = [];
+    this.tag = "beside";
     this.hostnames = {};
     // When each session last had the keyboard, so the list keeps recent ones on top.
     this.used = JSON.parse(localStorage.getItem("used") ?? "{}");
@@ -29,14 +30,16 @@ export default class SshSidebar extends View {
     cx.timer.every(120000, (cx) => this.loadHostnames(cx));
   }
 
-  // The person's own command names (an internal ssh wrapper, say). Absent file: ssh only.
+  // The person's own command names (an internal ssh wrapper, say) and where the tool tag goes.
+  // Absent file: ssh only, tag beside the host.
   loadConfig(cx) {
     cx.spawn(async (cx) => {
       let text = null;
       try { text = await readTextFile(`${appHome()}/${CONFIG}`); } catch { /* unreadable: as absent */ }
-      const extra = commandsOf(text);
-      if (JSON.stringify(extra) === JSON.stringify(this.extra)) return;
+      const extra = commandsOf(text), tag = tagOf(text);
+      if (JSON.stringify(extra) === JSON.stringify(this.extra) && tag === this.tag) return;
       this.extra = extra;
+      this.tag = tag;
       cx.notify();
     });
   }
@@ -97,6 +100,9 @@ export default class SshSidebar extends View {
 
   row(t, s, on) {
     const where = [s.user, s.machine, s.where].filter(Boolean).join(" · ");
+    const below = this.tag === "below";
+    const tag = () => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(s.tool);
+    const detail = () => div().truncate().text_size(12).text_color(t.dim).child(where);
     return h_flex()
       .id(`ssh-${s.address}`)
       .px(10).py(5).gap(8).rounded(6).items_center()
@@ -111,8 +117,12 @@ export default class SshSidebar extends View {
       .child(div().size(6).mx(3).flex_none().rounded_full().bg(t.working ?? t.accent))
       .child(v_flex().flex_1().min_w(0)
         .child(div().truncate().text_color(t.foreground).child(s.host || s.command))
-        .when(Boolean(where), (el) => el.child(div().truncate().text_size(12).text_color(t.dim).child(where))))
-      .child(div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(s.tool));
+        // Tag below: the host gets the row's whole width, and the tag leads the second line.
+        .when(below, (el) => el.child(h_flex().gap(6).items_center().min_w(0)
+          .child(tag())
+          .when(Boolean(where), (line) => line.child(detail().flex_1().min_w(0)))))
+        .when(!below && Boolean(where), (el) => el.child(detail())))
+      .when(!below, (el) => el.child(tag()));
   }
 
   render() {

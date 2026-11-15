@@ -1,3 +1,4 @@
 {
-  "commands": ["mytool"]
+  "commands": ["mytool"],
+  "tag": "beside"
 }

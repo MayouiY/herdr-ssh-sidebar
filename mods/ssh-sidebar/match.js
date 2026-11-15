@@ -108,6 +108,15 @@ export function sshSessions(list, extra = [], hostnames = {}) {
   return list.map((t) => sshSession(t, names, hostnames)).filter(Boolean);
 }
 
+/** The "tag" of ssh-terminals.json: where a row's tool tag goes, "beside" the host (default) or "below" it. */
+export function tagOf(text) {
+  try {
+    return JSON.parse(text ?? "{}")?.tag === "below" ? "below" : "beside";
+  } catch {
+    return "beside";
+  }
+}
+
 /** The "commands" of ssh-terminals.json; anything else in it is ignored. */
 export function commandsOf(text) {
   try {
