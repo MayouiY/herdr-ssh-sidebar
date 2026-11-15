@@ -90,3 +90,7 @@ one I am looking at). Never type into those terminals.
 - A session is listed only while `ssh` is the foreground program of its terminal. SSH started inside tmux or screen is not seen.
 - `herdr-ssh --focused` needs the Herdr window to be running.
 - The installer and `herdr-ssh` are not tested on Windows; sessions in terminals on a Windows machine connected to Herdr are listed.
+
+## License
+
+[MIT](LICENSE)
